@@ -1,92 +1,88 @@
+import streamlit as st
 import pandas as pd
 import joblib
-from sklearn.model_selection import train_test_split
-from sklearn.linear_model import LinearRegression
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.preprocessing import LabelEncoder
-from sklearn.impute import SimpleImputer
-from sklearn.metrics import mean_squared_error, accuracy_score
+import matplotlib.pyplot as plt
 
-# Load dataset
+# --- Load models and encoders ---
+leave_model = joblib.load("model.pkl")
+role_model = joblib.load("role_classifier.pkl")
+role_encoder = joblib.load("role_encoder.pkl")
+
+# --- Load dataset ---
 df = pd.read_csv("Employee.csv")
 
-# ===========================
-# Preprocessing
-# ===========================
-# Encode Education
+# --- Streamlit UI ---
+st.title("📊 Workforce Distribution AI")
+st.subheader("🔍 Predict Retention, Job Role, and Visualize Salary Trends")
+
+# --- Input Fields ---
+joining_year = st.number_input("Joining Year", min_value=2000, max_value=2025, value=2015)
+payment_tier = st.selectbox("Payment Tier", [1, 2, 3])
+age = st.slider("Age", min_value=18, max_value=60, value=30)
+experience = st.slider("Experience in Current Domain", 0, 20, 3)
+current_salary = st.number_input("Current Salary", value=40000)
+expected_next_salary = st.number_input("Expected Salary Next Year", value=45000)
+education = st.selectbox("Education", ["High School", "Bachelors", "Masters", "PhD"])
+city = st.selectbox("City", sorted(df["City"].unique()))
+
+# --- Encode Education ---
 education_map = {"High School": 0, "Bachelors": 1, "Masters": 2, "PhD": 3}
-df["EducationLevel"] = df["Education"].map(education_map)
+education_level = education_map[education]
 
-# Assign JobRole
-def assign_role(row):
-    if row['ExperienceInCurrentDomain'] >= 7 and row['CurrentSalary'] > 70000:
-        return "Senior Engineer"
-    elif row['ExperienceInCurrentDomain'] >= 3:
-        return "Mid-Level Developer"
-    else:
-        return "Junior Associate"
+# --- Feature Vector for Leave Prediction ---
+leave_input = pd.DataFrame([{
+    "JoiningYear": joining_year,
+    "PaymentTier": payment_tier,
+    "Age": age,
+    "ExperienceInCurrentDomain": experience,
+    "CurrentSalary": current_salary,
+    "ExpectedNextYearSalary": expected_next_salary,
+    "EducationLevel": education_level,
+    "AnnualWageGrowth": expected_next_salary - current_salary
+}])
 
-df["JobRole"] = df.apply(assign_role, axis=1)
+# --- Feature Vector for Role Prediction ---
+role_input = pd.DataFrame([{
+    "JoiningYear": joining_year,
+    "PaymentTier": payment_tier,
+    "Age": age,
+    "ExperienceInCurrentDomain": experience,
+    "CurrentSalary": current_salary,
+    "EducationLevel": education_level
+}])
 
-# Encode JobRole
-role_encoder = LabelEncoder()
-df["EncodedRole"] = role_encoder.fit_transform(df["JobRole"])
-joblib.dump(role_encoder, "role_encoder.pkl")
+# --- Predict when button clicked ---
+if st.button("Predict Outcome"):
+    # Leave prediction
+    leave_result = leave_model.predict(leave_input)[0]
+    leave_text = "Will Leave ❌" if leave_result == 1 else "Will Stay ✅"
+    st.success(f"📌 Retention Prediction: **{leave_text}**")
 
-# Features used in salary and role prediction
-features = ["JoiningYear", "PaymentTier", "Age", "ExperienceInCurrentDomain", "CurrentSalary", "EducationLevel"]
+    # Role prediction
+    role_encoded = role_model.predict(role_input)[0]
+    role_decoded = role_encoder.inverse_transform([role_encoded])[0]
+    st.info(f"🧑‍💼 Predicted Job Role: **{role_decoded}**")
 
-# ===========================
-# Train Salary Predictor
-# ===========================
-X_salary = df[features]
-y_salary = df["ExpectedNextYearSalary"]
+# --- 📈 Visualizations ---
+st.subheader("📈 Salary Growth Trend")
 
-salary_imputer = SimpleImputer(strategy='mean')
-X_salary_imputed = salary_imputer.fit_transform(X_salary)
-joblib.dump(salary_imputer, "salary_imputer.pkl")
-
-X_train, X_test, y_train, y_test = train_test_split(X_salary_imputed, y_salary, test_size=0.2, random_state=42)
-
-salary_model = LinearRegression()
-salary_model.fit(X_train, y_train)
-salary_pred = salary_model.predict(X_test)
-print("💰 Salary RMSE:", mean_squared_error(y_test, salary_pred, squared=False))
-joblib.dump(salary_model, "salary_predictor.pkl")
-
-# ===========================
-# Train Role Classifier
-# ===========================
-y_role = df["EncodedRole"]
-X_role_imputed = salary_imputer.transform(df[features])
-X_train_r, X_test_r, y_train_r, y_test_r = train_test_split(X_role_imputed, y_role, test_size=0.2, random_state=42)
-
-role_model = RandomForestClassifier(n_estimators=100, random_state=42)
-role_model.fit(X_train_r, y_train_r)
-role_pred = role_model.predict(X_test_r)
-print("🧑‍💼 Role Classifier Accuracy:", accuracy_score(y_test_r, role_pred))
-joblib.dump(role_model, "role_classifier.pkl")
-
-# ===========================
-# Train Leave Model
-# ===========================
+# Average salary growth by experience
 df["AnnualWageGrowth"] = df["ExpectedNextYearSalary"] - df["CurrentSalary"]
+avg_growth = df.groupby("ExperienceInCurrentDomain")["AnnualWageGrowth"].mean()
 
-leave_features = features + ["City"]
-leave_X_raw = pd.get_dummies(df[leave_features], columns=["City"], drop_first=True)
-leave_y = df["LeaveOrNot"]
+fig, ax = plt.subplots()
+avg_growth.plot(kind='line', marker='o', color='green', ax=ax)
+ax.set_title("Average Annual Wage Growth by Experience")
+ax.set_xlabel("Experience (Years)")
+ax.set_ylabel("Annual Wage Growth")
+st.pyplot(fig)
 
-leave_imputer = SimpleImputer(strategy="mean")
-leave_X = leave_imputer.fit_transform(leave_X_raw)
-joblib.dump(leave_imputer, "leave_imputer.pkl")
-joblib.dump(leave_X_raw.columns.tolist(), "leave_columns.pkl")
+# Optional: Show filtered data by city
+st.subheader("🏙️ City-wise Overview")
+city_data = df[df["City"] == city]
 
-X_train_l, X_test_l, y_train_l, y_test_l = train_test_split(leave_X, leave_y, test_size=0.2, random_state=42)
-
-leave_model = RandomForestClassifier(n_estimators=100, random_state=42)
-leave_model.fit(X_train_l, y_train_l)
-leave_pred = leave_model.predict(X_test_l)
-print("❌ Leave Model Accuracy:", accuracy_score(y_test_l, leave_pred))
-joblib.dump(leave_model, "leave_model.pkl")
-
-print("✅ All models and preprocessors saved.")
+if not city_data.empty:
+    st.write(f"Showing data for **{city}**")
+    st.dataframe(city_data[["Age", "CurrentSalary", "ExpectedNextYearSalary", "Education", "JobRole"]])
+else:
+    st.warning("No data found for this city.")
